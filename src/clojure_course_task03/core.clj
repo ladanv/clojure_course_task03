@@ -1,5 +1,7 @@
 (ns clojure-course-task03.core
-  (:require [clojure.set]))
+  (:require [clojure.set])
+  (:require [clojure.string :as str :only [replace-first
+                                           lower-case]]))
 
 (defn join* [table-name conds]
   (let [op (first conds)
@@ -205,6 +207,16 @@
 ;; TBD: Implement the following macros
 ;;
 
+(defmacro defatom [name]
+  `(do
+    (def ~name)
+    (when-not (bound? #'~name)
+      (def ~name (atom {})))))
+
+(defn add-variable [hashmap k v]
+  (let [curr-v (k @hashmap)]
+    (swap! hashmap assoc k (set (conj curr-v v))))) 
+
 (defmacro group [name & body]
   ;; Пример
   ;; (group Agent
@@ -216,15 +228,45 @@
   ;; 3) Создает следующие функции
   ;;    (select-agent-proposal) ;; select person, phone, address, price from proposal;
   ;;    (select-agent-agents)  ;; select clients_id, proposal_id, agent from agents;
-  )
+  (let [group-name (str/lower-case name)
+        group-key (keyword group-name)]
+    (defatom group-table-vars)
+    (loop [[table arrow-opp field-list & rst] body
+            defs []]
+      (if-not (= '-> arrow-opp)
+        (throw (Exception. "Maybe you've missed '->'?"))
+        (let [variable (symbol (str group-name "-" table "-fields"))
+              _def  `(def ~variable ~(reduce #(conj %1 (keyword %2)) [] field-list))
+              _defn `(defn ~(symbol (str "select-" group-name "-" table)) []
+                        (let [~(symbol (str table "-fields-var")) (quote ~field-list)]
+                           (select ~table (~'fields :all))))]
+          (add-variable group-table-vars group-key variable)
+          (let [_defs (conj defs _def _defn)]
+              (if (empty? rst)
+                `(do ~@_defs)
+              (recur rst _defs))))))))
 
-(defmacro user [name & body]
+(defmacro user [name [belongs-to gr]]
   ;; Пример
   ;; (user Ivanov
   ;;     (belongs-to Agent))
   ;; Создает переменные Ivanov-proposal-fields-var = [:person, :phone, :address, :price]
   ;; и Ivanov-agents-fields-var = [:clients_id, :proposal_id, :agent]
-  )
+  (if-not (= 'belongs-to belongs-to) 
+    (throw (Exception. ("Maybe you've missed 'belongs-to'?")))
+    (do 
+        (defatom user-table-vars)
+        (let [group-name (str/lower-case gr)
+              group-key (keyword group-name)
+              name-key (keyword (str/lower-case name))
+              def-var (fn [variable] 
+                        (let [user-var (symbol (str (str/replace-first variable group-name name) "-var"))]
+                          (add-variable user-table-vars name-key user-var)
+                          `(def ~user-var ~variable)))
+              def-user-table-vars (fn [] 
+                                   (map #(def-var %)  
+                                      (group-key @group-table-vars)))]
+          `(do ~@(def-user-table-vars))))))
 
 (defmacro with-user [name & body]
   ;; Пример
@@ -236,4 +278,11 @@
   ;;    proposal-fields-var и agents-fields-var.
   ;;    Таким образом, функция select, вызванная внутри with-user, получает
   ;;    доступ ко всем необходимым переменным вида <table-name>-fields-var.
-  )
+  (let [user-key (keyword (str/lower-case name))
+        def-var (fn [variable] 
+                      (list (symbol (str/replace-first variable (str name "-") "")) variable))
+        def-local-vars (fn [] 
+                         (reduce #(into %1 (def-var %2)) []  
+                           (user-key @user-table-vars)))]
+    `(let ~(def-local-vars)
+      ~@body)))
